@@ -15,40 +15,174 @@ files_to_process = [
 ]
 
 print(f"Looking for data in: {raw_data_dir}\n")
-
-for file_name in files_to_process:
-    file_path = os.path.join(raw_data_dir, file_name)
-    print(f"Processing file: {file_name}")
-    # print(f"Full file path: {file_path}") # Uncomment for debugging path issues
-    
-    if os.path.exists(file_path):
-        try:
-            df = pd.read_csv(file_path)
-            
-            print("\nFirst 10 rows:")
-            # Using display() for better output in Jupyter
-            from IPython.display import display
-            display(df.head(10))
-            
-            print("\nMissing values per column:")
-            missing_values = df.isnull().sum()
-            display(missing_values[missing_values > 0] if not missing_values[missing_values > 0].empty else "No missing values.")
-            
-            print("\nNumber of duplicate rows:")
-            num_duplicates = df.duplicated().sum()
-            display(f"{num_duplicates} duplicate rows found." if num_duplicates > 0 else "No duplicate rows.")
-            
-            print("\nDataFrame info:")
-            df.info()
-            
-            print("\nDescriptive statistics:")
-            display(df.describe(include='all'))
-            
-        except Exception as e:
-            print(f"Error processing file {file_name}: {e}")
-    else:
-        print(f"File not found: {file_path}")
-    print("\n" + "="*80 + "\n")
+# Check if essential variables for the initial exploration are defined
+if 'raw_data_dir' not in globals() and 'raw_data_dir' not in locals():
+    print("Error: 'raw_data_dir' is not defined for the initial exploration loop.")
+    print("Please ensure the cell(s) defining 'base_dir' and 'raw_data_dir' (usually at the top of the script/notebook) have been executed.")
+elif 'files_to_process' not in globals() and 'files_to_process' not in locals():
+    print("Error: 'files_to_process' is not defined for the initial exploration loop.")
+    print("Please ensure the cell defining 'files_to_process' (usually at the top of the script/notebook) has been executed.")
+else:
+    for file_name in files_to_process:
+        file_path = os.path.join(raw_data_dir, file_name)
+        header_text = f"Processing file: {file_name}"
+        print(header_text)
+        print("=" * len(header_text))
+        # print(f"Full file path: {file_path}") # Uncomment for debugging path issues
+        
+        if os.path.exists(file_path):
+            try:
+                df = pd.read_csv(file_path)
+                print(f"\nShape: {df.shape}")
+                
+                print("\nFirst 10 rows:")
+                print(df.head(10))
+                
+                print("\nMissing values per column:")
+                missing_values = df.isnull().sum()
+                print(missing_values[missing_values > 0] if not missing_values[missing_values > 0].empty else "No missing values.")
+                
+                print("\nNumber of duplicate rows:")
+                num_duplicates = df.duplicated().sum()
+                print(f"{num_duplicates} duplicate rows found." if num_duplicates > 0 else "No duplicate rows.")
+                
+                print("\nDataFrame info:")
+                df.info()
+                
+                print("\nDescriptive statistics:")
+                print(df.describe(include='all'))
+                
+            except Exception as e:
+                print(f"Error processing file {file_name}: {e}")
+        else:
+            print(f"File not found: {file_path}")
+        print("\n" + "="*80 + "\n") # Separator after each file's processing
 
 print("Data exploration complete.")
+
+# <<< START OF MERGE CODE >>>
+# Merging Plant Generation Data with Weather Sensor Data
+
+print("\n" + "="*80)
+print("Starting data merging process...")
+
+# Ensure necessary imports are available (pandas, os are at top of file)
+# from IPython.display import display # Will be imported conditionally later
+
+# Check if raw_data_dir is defined, as it's crucial for file paths.
+# The original script defines raw_data_dir near the top.
+# If this script is run in cells (e.g., Jupyter), ensure the cell defining raw_data_dir is executed first.
+if 'raw_data_dir' not in globals() and 'raw_data_dir' not in locals():
+    print("Error: 'raw_data_dir' is not defined. Please ensure the initial path setup cells (lines defining base_dir and raw_data_dir) have been run.")
+    print("Skipping merging process due to missing raw_data_dir.")
+    all_files_present_for_merge = False
+else:
+    plant1_gen_path = os.path.join(raw_data_dir, 'Plant_1_Generation_Data.csv')
+    plant1_weather_path = os.path.join(raw_data_dir, 'Plant_1_Weather_Sensor_Data.csv')
+    plant2_gen_path = os.path.join(raw_data_dir, 'Plant_2_Generation_Data.csv')
+    plant2_weather_path = os.path.join(raw_data_dir, 'Plant_2_Weather_Sensor_Data.csv')
+
+    all_files_present_for_merge = True
+    required_files_for_merge = {
+        "Plant 1 Generation Data": plant1_gen_path,
+        "Plant 1 Weather Data": plant1_weather_path,
+        "Plant 2 Generation Data": plant2_gen_path,
+        "Plant 2 Weather Data": plant2_weather_path
+    }
+
+    for name, pth in required_files_for_merge.items():
+        if not os.path.exists(pth):
+            print(f"Error: Required data file for merging not found: {name} at {pth}")
+            all_files_present_for_merge = False
+            break
+
+if all_files_present_for_merge:
+    try:
+        print("\nLoading datasets for merging...")
+        df_plant1_gen = pd.read_csv(plant1_gen_path)
+        df_plant1_weather = pd.read_csv(plant1_weather_path)
+        df_plant2_gen = pd.read_csv(plant2_gen_path)
+        df_plant2_weather = pd.read_csv(plant2_weather_path)
+
+        datasets_for_merge = {
+            "Plant 1 Generation": df_plant1_gen,
+            "Plant 1 Weather": df_plant1_weather,
+            "Plant 2 Generation": df_plant2_gen,
+            "Plant 2 Weather": df_plant2_weather
+        }
+
+        print("\nConverting DATE_TIME columns to datetime objects...")
+        for name, df_item in datasets_for_merge.items():
+            if 'DATE_TIME' in df_item.columns:
+                df_item['DATE_TIME'] = pd.to_datetime(df_item['DATE_TIME'], errors='coerce')
+            else:
+                print(f"Warning: 'DATE_TIME' column not found in {name} dataframe.")
+            # Ensure PLANT_ID is suitable for merging (e.g., consistent type)
+            # if 'PLANT_ID' in df_item.columns:
+            #     df_item['PLANT_ID'] = df_item['PLANT_ID'].astype(int) # Or str, depending on data
+
+        # Perform merges for each plant
+        print("\nMerging Plant 1 Generation and Weather data...")
+        merged_plant1 = pd.merge(
+            df_plant1_gen,
+            df_plant1_weather,
+            on=['DATE_TIME', 'PLANT_ID'],
+            how='inner', # Use 'inner' to keep only records with matching DATE_TIME and PLANT_ID in both datasets
+            suffixes=('_gen', '_weather') # Appends suffix to overlapping column names (excluding keys)
+        )
+        print(f"Plant 1 merged data shape: {merged_plant1.shape}")
+
+        print("\nMerging Plant 2 Generation and Weather data...")
+        merged_plant2 = pd.merge(
+            df_plant2_gen,
+            df_plant2_weather,
+            on=['DATE_TIME', 'PLANT_ID'],
+            how='inner',
+            suffixes=('_gen', '_weather')
+        )
+        print(f"Plant 2 merged data shape: {merged_plant2.shape}")
+
+        # Concatenate the two plant-specific merged dataframes
+        print("\nConcatenating Plant 1 and Plant 2 merged data into 'merged_df'...")
+        merged_df = pd.concat([merged_plant1, merged_plant2], ignore_index=True)
+        print(f"Final merged_df shape: {merged_df.shape}")
+
+        # Display the new dataset
+        header_merged_df = "\nDisplaying details for the final merged_df:"
+        print(header_merged_df)
+        print("=" * len(header_merged_df.strip())) # .strip() to remove leading newline for length calculation
+        print("\nFirst 5 rows:")
+        # Removed IPython.display dependency
+        print(merged_df.head())
+
+        print("\nInfo:")
+        merged_df.info(verbose=True, show_counts=True)
+
+        print("\nDescriptive statistics:")
+        print(merged_df.describe(include='all'))
+
+        print("\nMissing values per column:")
+        missing_values_merged = merged_df.isnull().sum()
+        if not missing_values_merged[missing_values_merged > 0].empty:
+            print(missing_values_merged[missing_values_merged > 0])
+        else:
+            print("No missing values in merged_df.")
+
+    except FileNotFoundError as e:
+        print(f"Error during merge: A data file was not found. This might be due to 'raw_data_dir' not being set correctly.")
+        print(f"Details: {e}")
+    except KeyError as e:
+        print(f"Error during merge: A key column (e.g., 'DATE_TIME' or 'PLANT_ID') was not found in one of the dataframes.")
+        print(f"Please check column names. Details: {e}")
+    except Exception as e:
+        print(f"An unexpected error occurred during merging: {e}")
+        import traceback
+        traceback.print_exc()
+elif 'raw_data_dir' in globals() or 'raw_data_dir' in locals(): # only print if raw_data_dir was defined but files were missing
+    print("Skipping merging process due to missing data files.")
+
+print("\nData merging process complete.")
+print("="*80 + "\n")
+# <<< END OF MERGE CODE >>>
+
 
