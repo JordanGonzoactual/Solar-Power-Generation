@@ -1,5 +1,9 @@
 import pandas as pd
 import os
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
+import sys # For getting script name for plot saving
 
 # Define the path to the RawData directory
 # Assuming the script is in EDA directory, and RawData is in the parent directory
@@ -13,6 +17,58 @@ files_to_process = [
     'Plant_2_Generation_Data.csv',
     'Plant_2_Weather_Sensor_Data.csv'
 ]
+
+
+def plot_correlation_heatmap(df, title):
+    """Generate and save a correlation heatmap for the given DataFrame."""
+    print(f"\nPlotting correlation heatmap for: {title}")
+    
+    # Select only numeric columns for correlation
+    numeric_df = df.select_dtypes(include=np.number)
+
+    # Exclude 'PLANT_ID' if it's present among numeric columns, as it's an identifier
+    if 'PLANT_ID' in numeric_df.columns:
+        print("  Excluding 'PLANT_ID' from correlation heatmap as it's an identifier.")
+        numeric_df = numeric_df.drop(columns=['PLANT_ID'])
+    
+    if numeric_df.empty:
+        print("  No numeric columns found to plot correlation heatmap.")
+        return
+
+    # Drop columns with no variance (all same value) as they result in NaN correlations
+    no_variance_cols = numeric_df.columns[numeric_df.nunique() <= 1]
+    if not no_variance_cols.empty:
+        print(f"  Dropping columns with no variance before correlation: {list(no_variance_cols)}")
+        numeric_df = numeric_df.drop(columns=no_variance_cols)
+        if numeric_df.empty:
+            print("  No numeric columns with variance left. Skipping heatmap.")
+            return
+
+    correlation_matrix = numeric_df.corr()
+    
+    plt.figure(figsize=(max(12, len(numeric_df.columns)*0.5), max(10, len(numeric_df.columns)*0.4)))
+    sns.heatmap(correlation_matrix, annot=True, cmap='coolwarm', fmt=".2f", linewidths=.5, annot_kws={"size": 8})
+    plt.title(f'Correlation Heatmap: {title}', fontsize=15)
+    plt.xticks(rotation=45, ha='right', fontsize=10)
+    plt.yticks(fontsize=10)
+    plt.tight_layout()
+    
+    # Save the plot
+    script_name_prefix = os.path.splitext(os.path.basename(sys.argv[0]))[0]
+    # Get project root assuming script is in EDA folder: .. (parent) / .. (project root)
+    project_root_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    output_plot_dir = os.path.join(project_root_path, 'reports', 'figures', script_name_prefix)
+    os.makedirs(output_plot_dir, exist_ok=True)
+    
+    plot_filename = f"{script_name_prefix}_{title.replace(' ', '_').replace(':', '').lower()}_correlation_heatmap.png"
+    output_plot_path = os.path.join(output_plot_dir, plot_filename)
+    
+    try:
+        plt.savefig(output_plot_path, dpi=300)
+        print(f"  Correlation heatmap saved to: {output_plot_path}")
+    except Exception as e:
+        print(f"  Error saving correlation heatmap: {e}")
+    plt.close() # Close the plot to free memory
 
 print(f"Looking for data in: {raw_data_dir}\n")
 # Check if essential variables for the initial exploration are defined
@@ -167,6 +223,9 @@ if all_files_present_for_merge:
             print(missing_values_merged[missing_values_merged > 0])
         else:
             print("No missing values in merged_df.")
+
+        # Plot correlation heatmap for the merged data
+        plot_correlation_heatmap(merged_df, "Raw Merged Data")
 
         # Pickle the merged_df to the DATA folder
         data_dir_path = os.path.join(base_dir, 'DATA') # base_dir is defined at the top of the script
