@@ -4,7 +4,7 @@ import os
 # Define the path to the RawData directory
 # Assuming the script is in EDA directory, and RawData is in the parent directory
 base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-raw_data_dir = os.path.join(base_dir, 'RawData')
+raw_data_dir = os.path.join(base_dir, 'DATA') # Changed from 'RawData' to 'DATA'
 
 # List of CSV files to process
 files_to_process = [
@@ -167,6 +167,19 @@ if all_files_present_for_merge:
             print(missing_values_merged[missing_values_merged > 0])
         else:
             print("No missing values in merged_df.")
+
+        # Pickle the merged_df to the DATA folder
+        data_dir_path = os.path.join(base_dir, 'DATA') # base_dir is defined at the top of the script
+        if not os.path.exists(data_dir_path):
+            os.makedirs(data_dir_path)
+            print(f"\nCreated directory: {data_dir_path}")
+        
+        pickle_file_path = os.path.join(data_dir_path, 'merged_solar_data.pkl')
+        try:
+            merged_df.to_pickle(pickle_file_path)
+            print(f"\nSuccessfully saved merged_df to: {pickle_file_path}")
+        except Exception as e:
+            print(f"\nError saving merged_df to pickle file: {e}")
 
     except FileNotFoundError as e:
         print(f"Error during merge: A data file was not found. This might be due to 'raw_data_dir' not being set correctly.")
