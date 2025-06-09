@@ -90,10 +90,6 @@ if train_index is None or test_index is None:
 train_df_raw = df.iloc[train_index].copy()
 test_df_raw = df.iloc[test_index].copy()
 
-# Create final y_train and y_test from the raw target series (these won't be changed by feature engineering on X)
-y_train_final = y_raw.iloc[train_index].copy()
-y_test_final = y_raw.iloc[test_index].copy()
-
 # Store original DATE_TIME series for metadata, as apply_feature_engineering might alter/drop it
 if 'DATE_TIME' in train_df_raw.columns:
     train_dates_original = train_df_raw['DATE_TIME'].copy()
@@ -108,8 +104,8 @@ else:
 
 print(f"  Raw training set size (before feature engineering): {len(train_df_raw)} rows ({len(train_df_raw)/len(df)*100:.1f}%)")
 print(f"  Raw testing set size (before feature engineering): {len(test_df_raw)} rows ({len(test_df_raw)/len(df)*100:.1f}%)")
-print(f"  Raw training y_train_final shape: {y_train_final.shape}")
-print(f"  Raw testing y_test_final shape: {y_test_final.shape}")
+print(f"  Raw training y-target shape: {y_raw.iloc[train_index].shape}")
+print(f"  Raw testing y-target shape: {y_raw.iloc[test_index].shape}")
 print(f"  Raw training date range: {train_df_raw['DATE_TIME'].min()} to {train_df_raw['DATE_TIME'].max()}")
 print(f"  Raw testing date range: {test_df_raw['DATE_TIME'].min()} to {test_df_raw['DATE_TIME'].max()}")
 # Note: The 'split_data' dictionary is removed from here; it will be redefined later with processed data info.
@@ -163,16 +159,18 @@ def apply_feature_engineering(df):
         print(f"    Mapping: {current_mapping}")
     
     # Create new time-based features
-    df['month'] = df['DATE_TIME'].dt.month
-    df['day'] = df['DATE_TIME'].dt.day
-    df['hour'] = df['DATE_TIME'].dt.hour
-    df['minute'] = df['DATE_TIME'].dt.minute
+    df['month'] = df['DATE_TIME'].dt.month.astype('category')
+    df['day'] = df['DATE_TIME'].dt.day.astype('category')
+    df['hour'] = df['DATE_TIME'].dt.hour.astype('category')
+    df['minute'] = df['DATE_TIME'].dt.minute.astype('category')
+    print("  Converted 'month', 'day', 'hour', 'minute' to category type.")
     
     # --- Add new features ---
     print("\nAdding new features...")
     
     # 1. is_peak_hour
-    df['is_peak_hour'] = ((df['hour'] >= 6) & (df['hour'] < 18)).astype(int)
+    df['is_peak_hour'] = ((df['hour'].astype(int) >= 6) & (df['hour'].astype(int) < 18)).astype('category')
+    print("  Converted 'is_peak_hour' to category type.")
     
     # 2. Sort once for all subsequent operations
     df = df.sort_values(by=['PLANT_ID', 'DATE_TIME']).copy()
@@ -218,6 +216,69 @@ def apply_feature_engineering(df):
     
     # Clear the groupby object to free memory
     del group_by_plant
+
+    # --- Calculate daytime statistics (6 AM to 6 PM) ---
+    print("\nCalculating daytime statistics (6 AM to 6 PM)...")
+    if 'DATE_TIME' not in df.columns:
+        print("  Error: DATE_TIME column required for daytime stats, but not found.")
+    elif 'hour' not in df.columns:
+        print("  Error: 'hour' column required for daytime stats, but not found.")
+    else:
+        df['date_only_temp'] = df['DATE_TIME'].dt.date
+        
+        daytime_mask = (df['hour'].astype(int) >= 6) & (df['hour'].astype(int) < 18)
+        df_daytime_only = df[daytime_mask].copy()
+
+        metrics_for_daytime_stats = ['AC_POWER', 'DC_POWER', 'AMBIENT_TEMPERATURE', 'MODULE_TEMPERATURE', 'IRRADIATION']
+        aggregations_map = {}
+        for metric in metrics_for_daytime_stats:
+            if metric in df_daytime_only.columns:
+                aggregations_map[metric] = ['mean', 'min', 'max', 'std']
+            else:
+                print(f"  Warning: Metric {metric} not found in daytime data for stats calculation. Skipping.")
+        
+        if df_daytime_only.empty or not aggregations_map:
+            print("  No daytime data or no valid metrics to aggregate. Skipping daytime stats calculation.")
+        else:
+            try:
+                daytime_aggregated_stats = df_daytime_only.groupby(['PLANT_ID', 'date_only_temp'], observed=True).agg(aggregations_map)
+                
+                new_col_names = []
+                for col_level0, col_level1 in daytime_aggregated_stats.columns:
+                    new_col_names.append(f"daytime_{col_level0.lower()}_{col_level1}")
+                daytime_aggregated_stats.columns = new_col_names
+                daytime_aggregated_stats.reset_index(inplace=True)
+                
+                df = pd.merge(df, daytime_aggregated_stats, on=['PLANT_ID', 'date_only_temp'], how='left')
+                print(f"  Successfully added {len(daytime_aggregated_stats.columns) - 2} daytime statistics columns.")
+            except Exception as e:
+                print(f"  Error during daytime stats calculation: {e}")
+
+        if 'date_only_temp' in df.columns:
+            df = df.drop(columns=['date_only_temp'])
+
+    # --- Add lag features ---
+    print("\nAdding lag features...")
+    metrics_for_lag = ['AC_POWER', 'DC_POWER', 'AMBIENT_TEMPERATURE', 'MODULE_TEMPERATURE', 'IRRADIATION']
+    # Lags in terms of number of 15-minute periods
+    lag_periods_map = {
+        '1h': 4,    # 1 hour * 4 samples/hour
+        '24h': 96,  # 24 hours * 4 samples/hour
+        '72h': 288  # 72 hours * 4 samples/hour
+    }
+
+    # Ensure DataFrame is sorted by PLANT_ID and DATE_TIME for correct lag calculation
+    # This should already be done, but as a safeguard if code order changes:
+    # df = df.sort_values(by=['PLANT_ID', 'DATE_TIME']).copy() 
+
+    for metric in metrics_for_lag:
+        if metric in df.columns:
+            for lag_name, periods in lag_periods_map.items():
+                col_name = f"{metric.lower()}_lag_{lag_name}"
+                df[col_name] = df.groupby('PLANT_ID')[metric].shift(periods)
+                print(f"  Added lag feature: {col_name}")
+        else:
+            print(f"  Warning: Metric {metric} not found for lag feature calculation. Skipping.")
     
     # Remove the original DATETIME column as we've extracted all time-based features
     if 'DATE_TIME' in df.columns:
@@ -293,6 +354,21 @@ if __name__ == "__main__":
     
     X_train_final = train_df_processed.drop(columns=cols_to_drop_for_X, errors='ignore')
     X_test_final = test_df_processed.drop(columns=cols_to_drop_for_X, errors='ignore')
+
+    # Define y_train_final and y_test_final from the processed dataframes to ensure index alignment
+    if 'DAILY_YIELD' in train_df_processed.columns:
+        y_train_final = train_df_processed['DAILY_YIELD'].copy()
+        print(f"  y_train_final created from processed data, shape: {y_train_final.shape}")
+    else:
+        print("CRITICAL ERROR: 'DAILY_YIELD' not found in train_df_processed. Cannot create y_train_final.")
+        exit("Exiting due to missing DAILY_YIELD in train_df_processed.")
+
+    if 'DAILY_YIELD' in test_df_processed.columns:
+        y_test_final = test_df_processed['DAILY_YIELD'].copy()
+        print(f"  y_test_final created from processed data, shape: {y_test_final.shape}")
+    else:
+        print("CRITICAL ERROR: 'DAILY_YIELD' not found in test_df_processed. Cannot create y_test_final.")
+        exit("Exiting due to missing DAILY_YIELD in test_df_processed.")
 
     # Define directory for processed data
     output_dir = os.path.join(project_root, 'DATA', 'processed')
