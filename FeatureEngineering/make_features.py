@@ -175,14 +175,15 @@ def apply_feature_engineering(df):
     # 2. Sort once for all subsequent operations
     df = df.sort_values(by=['PLANT_ID', 'DATE_TIME']).copy()
     
-    # 3. Create date column for grouping (temporary)
-    date_group = df['DATE_TIME'].dt.normalize()  # Faster than dt.date
+    # 3. Create date column for grouping (temporary) - CUMSUM REMOVED
+    # date_group = df['DATE_TIME'].dt.normalize()  # Faster than dt.date
     
-    # 4. Calculate cumulative sums using vectorized operations
-    df['cumsum_dc_power'] = df.groupby(['PLANT_ID', date_group])['DC_POWER'].cumsum()
-    df['cumsum_ac_power'] = df.groupby(['PLANT_ID', date_group])['AC_POWER'].cumsum()
+    # 4. Calculate cumulative sums using vectorized operations - CUMSUM REMOVED
+    # df['cumsum_dc_power'] = df.groupby(['PLANT_ID', date_group])['DC_POWER'].cumsum()
+    # df['cumsum_ac_power'] = df.groupby(['PLANT_ID', date_group])['AC_POWER'].cumsum()
+    # print("  Removed 'cumsum_dc_power' and 'cumsum_ac_power'.")
     
-    # 5. Inverter efficiency using numpy where for vectorized conditional logic
+    # Inverter efficiency using numpy where for vectorized conditional logic
     df['inverter_efficiency'] = np.where(
         df['DC_POWER'] != 0,
         (df['AC_POWER'] / df['DC_POWER']) * 100,
@@ -240,19 +241,21 @@ def apply_feature_engineering(df):
         if df_daytime_only.empty or not aggregations_map:
             print("  No daytime data or no valid metrics to aggregate. Skipping daytime stats calculation.")
         else:
-            try:
-                daytime_aggregated_stats = df_daytime_only.groupby(['PLANT_ID', 'date_only_temp'], observed=True).agg(aggregations_map)
-                
-                new_col_names = []
-                for col_level0, col_level1 in daytime_aggregated_stats.columns:
-                    new_col_names.append(f"daytime_{col_level0.lower()}_{col_level1}")
-                daytime_aggregated_stats.columns = new_col_names
-                daytime_aggregated_stats.reset_index(inplace=True)
-                
-                df = pd.merge(df, daytime_aggregated_stats, on=['PLANT_ID', 'date_only_temp'], how='left')
-                print(f"  Successfully added {len(daytime_aggregated_stats.columns) - 2} daytime statistics columns.")
-            except Exception as e:
-                print(f"  Error during daytime stats calculation: {e}")
+            # --- Daytime statistics (mean, min, max, std) calculation REMOVED ---
+            # try:
+            #     daytime_aggregated_stats = df_daytime_only.groupby(['PLANT_ID', 'date_only_temp'], observed=True).agg(aggregations_map)
+            #     
+            #     new_col_names = []
+            #     for col_level0, col_level1 in daytime_aggregated_stats.columns:
+            #         new_col_names.append(f"daytime_{col_level0.lower()}_{col_level1}")
+            #     daytime_aggregated_stats.columns = new_col_names
+            #     daytime_aggregated_stats.reset_index(inplace=True)
+            #     
+            #     df = pd.merge(df, daytime_aggregated_stats, on=['PLANT_ID', 'date_only_temp'], how='left')
+            #     print(f"  Daytime statistics (mean, min, max, std) features REMOVED.") # Adjusted print message
+            # except Exception as e:
+            #     print(f"  Error during (now removed) daytime stats calculation: {e}")
+            print("  Daytime statistics (mean, min, max, std) features REMOVED.")
 
         if 'date_only_temp' in df.columns:
             df = df.drop(columns=['date_only_temp'])
