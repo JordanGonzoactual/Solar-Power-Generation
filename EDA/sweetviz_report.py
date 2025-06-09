@@ -62,42 +62,58 @@ def generate_sweetviz_report():
 
     # Construct the absolute path to the data files
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    train_data_path = os.path.join(project_root, 'DATA', 'processed', 'train_data.pkl')
+    processed_data_dir = os.path.join(project_root, 'DATA', 'processed')
     output_dir = os.path.join(project_root, 'reports', 'sweetviz')
     os.makedirs(output_dir, exist_ok=True)
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_file = os.path.join(output_dir, f'train_data_analysis_{timestamp}.html')
+    output_file = os.path.join(output_dir, f'training_data_sweetviz_report_{timestamp}.html')
     
-    print(f"\nLoading training data from: {train_data_path}")
+    print(f"\nLoading processed training data (X_train, y_train) and metadata...")
     
     try:
-        # Load the training dataset
-        df = pd.read_pickle(train_data_path)
-        print(f"Successfully loaded training data with shape: {df.shape}")
+        import pickle # Ensure pickle is imported
+        X_train = pd.read_pickle(os.path.join(processed_data_dir, 'X_train.pkl'))
+        y_train = pd.read_pickle(os.path.join(processed_data_dir, 'y_train.pkl'))
+        with open(os.path.join(processed_data_dir, 'time_series_splits.pkl'), 'rb') as f:
+            metadata = pickle.load(f)
         
-        # Check if target column exists
-        if 'DAILY_YIELD' not in df.columns:
-            raise ValueError("'DAILY_YIELD' column not found in the training data")
+        target_name = metadata.get('target_variable_name', 'DAILY_YIELD') # Default if not found
+        
+        print(f"Successfully loaded X_train (shape: {X_train.shape}) and y_train (shape: {y_train.shape}).")
+        print(f"Target variable for Sweetviz: {target_name}")
+
+        # Reconstruct the training DataFrame for Sweetviz
+        # Ensure y_train is a Series and then rename it to the target_name
+        if isinstance(y_train, pd.DataFrame) and y_train.shape[1] == 1:
+            y_train_series = y_train.iloc[:, 0].copy()
+        elif isinstance(y_train, pd.Series):
+            y_train_series = y_train.copy()
+        else:
+            raise ValueError("y_train is not a Series or a single-column DataFrame.")
+        
+        y_train_series.name = target_name
+        df_for_sweetviz = pd.concat([X_train.reset_index(drop=True), y_train_series.reset_index(drop=True)], axis=1)
+        print(f"Reconstructed DataFrame for Sweetviz with shape: {df_for_sweetviz.shape}")
+
+        # Check if target column exists in the reconstructed DataFrame
+        if target_name not in df_for_sweetviz.columns:
+            raise ValueError(f"'{target_name}' column not found in the reconstructed training data for Sweetviz.")
         
         # Generate the Sweetviz report
         print("\nGenerating Sweetviz report. This may take a moment...")
         
         try:
-            # Create a copy of the dataframe to avoid SettingWithCopyWarning
-            df_analysis = df.copy()
-            
-            # Generate the Sweetviz report with DAILY_YIELD as target
+            # Generate the Sweetviz report with the correct target feature
             report = sv.analyze(
-                df_analysis, 
-                target_feat='DAILY_YIELD', 
-                pairwise_analysis='on',
-                feat_cfg=sv.FeatureConfig(force_text=['DATE_TIME'])
+                df_for_sweetviz, 
+                target_feat=target_name, 
+                pairwise_analysis='on' # Keep pairwise analysis if desired
             )
             report.show_html(output_file, open_browser=False)
             print(f"\n✅ Sweetviz report saved to: {output_file}")
             print("Open the HTML file in your web browser to view the report.")
-            print("Note: Using 'DAILY_YIELD' as the target variable for analysis.")
+            print(f"Note: Using '{target_name}' as the target variable for analysis.")
             
         except Exception as e:
             print(f"\n⚠️  Error generating full report: {str(e)}")
