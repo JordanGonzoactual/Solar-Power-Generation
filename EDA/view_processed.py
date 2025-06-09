@@ -25,18 +25,84 @@ plt.rcParams['figure.facecolor'] = 'white'  # White background for plots
 # Set up paths
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 processed_dir = os.path.join(project_root, 'DATA', 'processed')
-train_path = os.path.join(processed_dir, 'train_data.pkl')
-test_path = os.path.join(processed_dir, 'test_data.pkl')
 
 def load_data():
-    """Load the processed train and test datasets."""
+    """Load X/y splits and metadata, then reconstruct full train/test DataFrames."""
     try:
-        train_df = pd.read_pickle(train_path)
-        test_df = pd.read_pickle(test_path)
-        print("✅ Successfully loaded processed datasets")
+        # Load the X/y splits
+        X_train_loaded = pd.read_pickle(os.path.join(processed_dir, 'X_train.pkl'))
+        X_test_loaded = pd.read_pickle(os.path.join(processed_dir, 'X_test.pkl'))
+        y_train_loaded = pd.read_pickle(os.path.join(processed_dir, 'y_train.pkl'))
+        y_test_loaded = pd.read_pickle(os.path.join(processed_dir, 'y_test.pkl'))
+        
+        # Load split metadata
+        with open(os.path.join(processed_dir, 'time_series_splits.pkl'), 'rb') as f:
+            import pickle # Keep import here as it was, or move to top
+            split_info = pickle.load(f)
+
+        target_name = split_info.get('target_variable_name', 'DAILY_YIELD') # Default if not in metadata
+
+        # Combine X_train and y_train
+        X_train_processed = X_train_loaded.reset_index(drop=True)
+        y_train_processed = y_train_loaded.reset_index(drop=True).rename(target_name)
+        # Ensure y_train_processed is a DataFrame for concat, if it's a Series
+        if isinstance(y_train_processed, pd.Series):
+            y_train_processed = y_train_processed.to_frame()
+        train_df_reconstructed = pd.concat([X_train_processed, y_train_processed], axis=1)
+
+        # Combine X_test and y_test
+        X_test_processed = X_test_loaded.reset_index(drop=True)
+        y_test_processed = y_test_loaded.reset_index(drop=True).rename(target_name)
+        # Ensure y_test_processed is a DataFrame for concat, if it's a Series
+        if isinstance(y_test_processed, pd.Series):
+            y_test_processed = y_test_processed.to_frame()
+        test_df_reconstructed = pd.concat([X_test_processed, y_test_processed], axis=1)
+
+        # Sort DataFrames by engineered time features to ensure .head() shows earliest records
+        time_sort_columns = ['month', 'day', 'hour', 'minute']
+        # Check if all sort columns exist before attempting to sort
+        if all(col in train_df_reconstructed.columns for col in time_sort_columns):
+            train_df_reconstructed = train_df_reconstructed.sort_values(by=time_sort_columns).reset_index(drop=True)
+            print("  Sorted training data by month, day, hour, minute.")
+        else:
+            print(f"  Warning: Could not sort training data by {time_sort_columns} as one or more columns are missing.")
+        
+        if all(col in test_df_reconstructed.columns for col in time_sort_columns):
+            test_df_reconstructed = test_df_reconstructed.sort_values(by=time_sort_columns).reset_index(drop=True)
+            print("  Sorted testing data by month, day, hour, minute.")
+        else:
+            print(f"  Warning: Could not sort testing data by {time_sort_columns} as one or more columns are missing.")
+        
+        print("✅ Successfully loaded and reconstructed processed datasets using time series splits")
+        print(f"  Training date range (from metadata): {split_info['train_date_range']['start']} to {split_info['train_date_range']['end']}")
+        print(f"  Testing date range (from metadata):  {split_info['test_date_range']['start']} to {split_info['test_date_range']['end']}")
+        print(f"  Reconstructed train_df shape: {train_df_reconstructed.shape}, columns: {train_df_reconstructed.columns.tolist()[:5]}...")
+        print(f"  Reconstructed test_df shape: {test_df_reconstructed.shape}, columns: {test_df_reconstructed.columns.tolist()[:5]}...")
+
+        return {
+            'train_df': train_df_reconstructed,
+            'test_df': test_df_reconstructed,
+            'metadata': split_info
+        }
+        
+    except FileNotFoundError as fnf_error:
+        print(f"❌ Error loading processed datasets: File not found - {fnf_error}. Ensure make_features.py has run successfully.")
+        return None
+    except Exception as e:
+        print(f"❌ Error loading and reconstructing processed datasets: {e}")
+        import traceback
+        traceback.print_exc() # Print full traceback for debugging
+        return None
+
+def load_legacy_data():
+    """Legacy function to load data in the old format (for backward compatibility)."""
+    try:
+        train_df = pd.read_pickle(os.path.join(processed_dir, 'train_data.pkl'))
+        test_df = pd.read_pickle(os.path.join(processed_dir, 'test_data.pkl'))
+        print("✅ Successfully loaded legacy processed datasets")
         return train_df, test_df
     except Exception as e:
-        print(f"❌ Error loading processed datasets: {e}")
+        print(f"❌ Error loading legacy datasets: {e}")
         return None, None
 
 def display_data_preview(df, title, n_rows=5):
@@ -55,11 +121,46 @@ def display_data_preview(df, title, n_rows=5):
     # Reset index to show row numbers
     df_preview = df_preview.reset_index(drop=True)
     
-    # Display the table with horizontal scrolling
-    with pd.option_context('display.width', None, 'display.max_columns', None, 'display.max_colwidth', 30):
-        print(df_preview.to_string())
+    if df_preview.shape[1] > 20: # If more than 20 columns, transpose for better readability
+        print("DataFrame has many columns. First, showing key time features for the earliest records (non-transposed):")
+        time_features = ['month', 'day', 'hour', 'minute']
+        # Ensure all time features are present before trying to display them
+        actual_time_features_present = [col for col in time_features if col in df.columns]
+        if actual_time_features_present:
+            print(df[actual_time_features_present].head(n_rows).to_string())
+        else:
+            print("(Could not display key time features as columns 'month', 'day', 'hour', 'minute' were not all found.)")
+        print("\nNow, displaying .head() transposed (all original columns shown as rows):")
+        # When transposing, ensure all rows (original columns) are shown.
+        # The number of columns will be small (n_rows).
+        with pd.option_context('display.width', 200, 
+                               'display.max_rows', None, 
+                               'display.max_columns', n_rows + 1, # For index + n_rows 
+                               'display.max_colwidth', 50, 
+                               'display.precision', 4):
+            print(df_preview.T)
+    else: # For DataFrames with fewer columns, display horizontally
+        # display.width=1000 allows for more horizontal space before wrapping.
+        # display.max_columns=None ensures all columns are shown.
+        with pd.option_context('display.width', 1000, 
+                               'display.max_columns', None, 
+                               'display.max_colwidth', 35, 
+                               'display.precision', 4):
+            print(df_preview.to_string())
     
     print(f"\nShape: {df.shape}")
+    print("-" * 80)
+
+def display_dataframe_summary(df, title):
+    """Display .info() and transposed .describe() for a DataFrame."""
+    print(f"\n{title} - Summary Information")
+    print("=" * 80)
+    print(f"\n--- {title}: .info() ---")
+    df.info(verbose=True, show_counts=True)
+    print(f"\n--- {title}: .describe() (transposed) ---")
+    with pd.option_context('display.width', 200, 'display.max_columns', None, 'display.precision', 4):
+        # Transposing describe() output is often more readable for many features
+        print(df.describe(include='all').T)
     print("-" * 80)
 
 def plot_correlation_heatmap(df, title):
@@ -119,16 +220,28 @@ def main():
     print("PROCESSED DATA EXPLORATION".center(80))
     print("="*80)
     
-    # Load the data
-    train_df, test_df = load_data()
+    # Load the data with time series splits
+    data = load_data()
     
-    if train_df is None or test_df is None:
-        return
+    # Fall back to legacy data loading if new format fails
+    if data is None:
+        print("\n⚠️  Could not load data with time series splits. Trying legacy format...")
+        train_df, test_df = load_legacy_data()
+        if train_df is None or test_df is None:
+            return
+    else:
+        train_df = data['train_df']
+        test_df = data['test_df']
     
     # Display data previews with a subset of rows
     print("\n" + " LOADING DATA PREVIEWS ".center(80, "#"))
     display_data_preview(train_df, "TRAINING DATA (First 5 Rows)", n_rows=5)
     display_data_preview(test_df, "TESTING DATA (First 5 Rows)", n_rows=5)
+
+    # Display DataFrame summaries (.info() and .describe())
+    print("\n" + " DATAFRAME SUMMARIES (.info() & .describe()) ".center(80, "#"))
+    display_dataframe_summary(train_df, "Training Data")
+    display_dataframe_summary(test_df, "Testing Data")
     
     # Ask user if they want to see more rows
     show_more = input("\nShow more rows? (y/n): ").lower()
@@ -141,6 +254,18 @@ def main():
     print("\n" + " GENERATING CORRELATION HEATMAPS ".center(80, "#"))
     plot_correlation_heatmap(train_df, "Training Data")
     plot_correlation_heatmap(test_df, "Testing Data")
+    
+    # The train/test split visualization that relied on DATE_TIME has been removed.
+    # We can still report the size of the train and test sets.
+    print("\n" + " DATA SPLIT INFORMATION ".center(80, "#"))
+    if train_df is not None and test_df is not None:
+        print(f"Number of samples in Training set: {len(train_df)}")
+        print(f"Number of samples in Testing set:  {len(test_df)}")
+        if len(train_df) + len(test_df) > 0:
+            test_percentage = (len(test_df) / (len(train_df) + len(test_df))) * 100
+            print(f"Test set constitutes {test_percentage:.2f}% of the total processed data.")
+    else:
+        print("Train/Test data not available to show split information.")
 
 if __name__ == "__main__":
     main()
