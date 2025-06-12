@@ -1,0 +1,11 @@
+*.ipynb linguist-language=Python
+*.html linguist-generated=true
+*.js linguist-generated=true
+*.css linguist-generated=true
+mlruns/* linguist-generated=true
+outputs/* linguist-generated=true
+plots/* linguist-generated=true
+reports/* linguist-generated=true
+data/* linguist-vendored=true
+*.py linguist-language=Python
+*.md linguist-documentation=true
