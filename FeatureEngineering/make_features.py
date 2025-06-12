@@ -2,6 +2,11 @@ import pandas as pd
 import os
 import numpy as np
 from sklearn.model_selection import TimeSeriesSplit
+from sklearn.utils import check_array
+from sklearn.preprocessing import LabelEncoder
+import json
+import warnings
+warnings.filterwarnings('ignore', category=FutureWarning)  # Suppress FutureWarnings
 
 # Construct the absolute path to the data file
 # __file__ is the path to the current script (make_features.py)
@@ -40,50 +45,44 @@ except Exception as e:
 # --- Time-based train/test split using TimeSeriesSplit ---
 print("\nPerforming time-based train/test split using TimeSeriesSplit...")
 
-
-
-
 # Prepare raw X and y for TimeSeriesSplit
 # Ensure 'DAILY_YIELD' exists before dropping
 if 'DAILY_YIELD' not in df.columns:
     print("Error: 'DAILY_YIELD' target column not found in the DataFrame before splitting.")
     exit()
+
 X_raw = df.drop(columns=['DAILY_YIELD'])
 y_raw = df['DAILY_YIELD']
 
 n_samples = len(X_raw)
-n_splits_val = 2 # To get one ~80/20 train/test split using the last fold logic
 
-# For TimeSeriesSplit, n_samples must be > n_splits_val.
-if n_samples <= n_splits_val:
-    print(f"Error: Not enough samples ({n_samples}) for TimeSeriesSplit with n_splits={n_splits_val}. Need more than {n_splits_val} samples.")
-    exit()
+# Use 5-fold TimeSeriesSplit
+n_splits_val = 5
+print(f"  Using TimeSeriesSplit with {n_splits_val} folds")
 
-# Calculate test_size as an integer number of samples (approx 20% of total data)
-test_samples_count = int(n_samples * 0.2)
+# Initialize TimeSeriesSplit with 5 folds
+tscv = TimeSeriesSplit(n_splits=n_splits_val, test_size=None, gap=0)
 
-# Ensure test_samples_count is at least 1
-if test_samples_count == 0:
-    print(f"Warning: Calculated 20% test_samples_count is 0 for n_samples={n_samples}. Setting to 1 to ensure a non-empty test set.")
-    test_samples_count = 1
-    
-    # If test_size was forced to 1, check if the first training split (smallest one) would be empty.
-    # Smallest training set in TimeSeriesSplit (for the first of n_splits_val splits) has size:
-    # n_samples - n_splits_val * test_samples_count. This must be at least 1.
-    if (n_samples - n_splits_val * test_samples_count) < 1:
-         print(f"Error: With n_samples={n_samples}, n_splits={n_splits_val} and test_size forced to 1, the first training split would be empty. Increase n_samples or adjust split strategy.")
-         exit()
+# Get all splits for analysis
+splits = list(tscv.split(X_raw))
+print(f"  Total samples: {len(X_raw)}")
 
-# Initialize TimeSeriesSplit with an integer test_size
-tscv = TimeSeriesSplit(n_splits=n_splits_val, test_size=test_samples_count, gap=0)
+# Log the size of each fold
+for i, (tr_idx, te_idx) in enumerate(splits):
+    print(f"  Fold {i+1}: Train size={len(tr_idx)}, Test size={len(te_idx)}", end="")
+    if len(te_idx) > 0:
+        print(f" ({(len(te_idx)/len(X_raw))*100:.1f}% of data)")
+    else:
+        print()
 
-# Get the indices for the last split
-train_index, test_index = None, None
-for tr_idx, te_idx in tscv.split(X_raw):
-    train_index, test_index = tr_idx, te_idx
+# Use the last split for final train/test
+train_index, test_index = splits[-1]
+print(f"\n  Using fold {n_splits_val} as test set with {len(test_index)} samples ({(len(test_index)/len(X_raw))*100:.1f}% of data)")
+print(f"  Training set size: {len(train_index)} samples ({(len(train_index)/len(X_raw))*100:.1f}% of data)")
 
-if train_index is None or test_index is None:
-    print("Error: TimeSeriesSplit did not produce any splits. Check data size and split parameters.")
+# Verify we have enough samples
+if len(train_index) == 0 or len(test_index) == 0:
+    print("Error: One of the splits is empty. Check your data and split parameters.")
     exit()
 
 # Create raw training and testing DataFrames using the original df to keep all columns initially
@@ -123,12 +122,15 @@ def apply_feature_engineering(df):
     
     # --- Categorical Encoding ---
     print("\nPerforming categorical encoding...")
-    columns_to_encode = ['SOURCE_KEY_gen', 'SOURCE_KEY_weather', 'PLANT_ID']
-    all_mappings = {}  # To store all mappings for later reference
+    # The merge operation creates SOURCE_KEY_x and SOURCE_KEY_y from the generator and weather data respectively
+    columns_to_encode = ['SOURCE_KEY_x', 'SOURCE_KEY_y', 'PLANT_ID']
     
-    # Create directory for saving encodings if it doesn't exist
-    import os
-    import json
+    # Define a mapping from column names to the desired JSON file names
+    mapping_filenames = {
+        'SOURCE_KEY_x': 'SOURCE_KEY_gen_mapping.json',
+        'SOURCE_KEY_y': 'SOURCE_KEY_weather_mapping.json'
+    }
+
     encodings_dir = os.path.join(project_root, 'models', 'encodings')
     os.makedirs(encodings_dir, exist_ok=True)
 
@@ -139,41 +141,66 @@ def apply_feature_engineering(df):
 
         print(f"  Encoding column: {col_name}")
         
-        # Convert to string and then to category
-        df[col_name] = df[col_name].astype(str)
-        df[col_name] = df[col_name].astype('category')
-        
-        # Create mapping from category to code
-        current_mapping = {str(category): int(code) for code, category in enumerate(df[col_name].cat.categories)}
-        all_mappings[col_name] = current_mapping
-        
-        # Apply the encoding
-        df[col_name] = df[col_name].cat.codes
-        df[col_name] = df[col_name].astype('category')
-        
-        # Save the mapping to a JSON file
-        mapping_file = os.path.join(encodings_dir, f'{col_name}_mapping.json')
-        with open(mapping_file, 'w') as f:
-            json.dump(current_mapping, f, indent=2)
-        print(f"    Saved {col_name} mapping to {mapping_file}")
-        print(f"    Mapping: {current_mapping}")
+        try:
+            # Ensure column is of string type before encoding for the LabelEncoder
+            df[col_name] = df[col_name].astype(str)
+            
+            le = LabelEncoder()
+            df[col_name] = le.fit_transform(df[col_name])
+            
+            # Convert the transformed integer column to a 'category' dtype as requested
+            df[col_name] = df[col_name].astype('category')
+            
+            # Create and save the mapping from original labels to integer codes
+            mapping = {label: int(code) for label, code in zip(le.classes_, le.transform(le.classes_))}
+            
+            # Use the predefined filename for the mapping file, or default to the column name
+            filename = mapping_filenames.get(col_name, f'{col_name}_mapping.json')
+            mapping_file = os.path.join(encodings_dir, filename)
+
+            with open(mapping_file, 'w') as f:
+                json.dump(mapping, f, indent=2)
+            print(f"    Saved {col_name} mapping to {mapping_file}")
+            print(f"    Mapping: {mapping}")
+            
+        except Exception as e:
+            print(f"    Error encoding column {col_name}: {str(e)}")
+            continue
     
-    # Create new time-based features
-    df['month'] = df['DATE_TIME'].dt.month.astype('category')
-    df['day'] = df['DATE_TIME'].dt.day.astype('category')
-    df['hour'] = df['DATE_TIME'].dt.hour.astype('category')
-    df['minute'] = df['DATE_TIME'].dt.minute.astype('category')
-    print("  Converted 'month', 'day', 'hour', 'minute' to category type.")
+    # Create new time-based features with explicit categorical types
+    try:
+        df['month'] = df['DATE_TIME'].dt.month.astype('int8')
+        df['day'] = df['DATE_TIME'].dt.day.astype('int8')
+        df['hour'] = df['DATE_TIME'].dt.hour.astype('int8')
+        df['minute'] = df['DATE_TIME'].dt.minute.astype('int8')
+        
+        # Convert to categorical with explicit categories
+        df['month'] = pd.Categorical(df['month'], categories=range(1, 13), ordered=True)
+        df['day'] = pd.Categorical(df['day'], categories=range(1, 32), ordered=True)
+        df['hour'] = pd.Categorical(df['hour'], categories=range(0, 24), ordered=True)
+        df['minute'] = pd.Categorical(df['minute'], categories=range(0, 60), ordered=True)
+        
+        print("  Created time-based categorical features: 'month', 'day', 'hour', 'minute'")
+    except Exception as e:
+        print(f"  Error creating time-based features: {str(e)}")
     
     # --- Add new features ---
     print("\nAdding new features...")
     
-    # 1. is_peak_hour
-    df['is_peak_hour'] = ((df['hour'].astype(int) >= 6) & (df['hour'].astype(int) < 18)).astype('category')
-    print("  Converted 'is_peak_hour' to category type.")
+    # 1. is_peak_hour - convert hour to int for comparison
+    try:
+        hour_as_int = df['hour'].astype(int)
+        df['is_peak_hour'] = ((hour_as_int >= 6) & (hour_as_int < 18)).astype('int8')
+        df['is_peak_hour'] = df['is_peak_hour'].astype('category')
+        print("  Created 'is_peak_hour' feature")
+    except Exception as e:
+        print(f"  Error creating 'is_peak_hour' feature: {str(e)}")
     
     # 2. Sort once for all subsequent operations
-    df = df.sort_values(by=['PLANT_ID', 'DATE_TIME']).copy()
+    try:
+        df = df.sort_values(by=['PLANT_ID', 'DATE_TIME']).copy()
+    except Exception as e:
+        print(f"  Error sorting DataFrame: {str(e)}")
     
     # 3. Create date column for grouping (temporary) - CUMSUM REMOVED
     # date_group = df['DATE_TIME'].dt.normalize()  # Faster than dt.date
@@ -271,17 +298,25 @@ def apply_feature_engineering(df):
     }
 
     # Ensure DataFrame is sorted by PLANT_ID and DATE_TIME for correct lag calculation
-    # This should already be done, but as a safeguard if code order changes:
-    # df = df.sort_values(by=['PLANT_ID', 'DATE_TIME']).copy() 
+    df = df.sort_values(by=['PLANT_ID', 'DATE_TIME']).copy()
 
+    # Store original index to restore later
+    original_index = df.index
+    
     for metric in metrics_for_lag:
         if metric in df.columns:
             for lag_name, periods in lag_periods_map.items():
                 col_name = f"{metric.lower()}_lag_{lag_name}"
-                df[col_name] = df.groupby('PLANT_ID')[metric].shift(periods)
-                print(f"  Added lag feature: {col_name}")
+                # Calculate lagged values within each PLANT_ID group
+                df[col_name] = df.groupby('PLANT_ID')[metric].transform(
+                    lambda x: x.shift(periods).fillna(method='ffill').fillna(0)
+                )
+                print(f"  Added lag feature: {col_name} (NaN values forward filled within each PLANT_ID group)")
         else:
             print(f"  Warning: Metric {metric} not found for lag feature calculation. Skipping.")
+    
+    # Restore original index
+    df = df.reindex(original_index)
     
     # Remove the original DATETIME column as we've extracted all time-based features
     if 'DATE_TIME' in df.columns:
